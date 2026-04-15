@@ -1,0 +1,508 @@
+## PROGRAM CODE:
+```
+import random
+
+import google.generativeai as genai
+import pandas as pd
+import requests
+import streamlit as st
+import streamlit.components.v1 as components
+from PIL import Image
+
+
+st.set_page_config(page_title="FoodBridge - Reduce Hunger", page_icon="🍲", layout="wide")
+
+
+TEXTS = {
+    "English": {
+        "navigate": "Navigate",
+        "title": "FoodBridge - Reduce Hunger",
+        "subtitle": "Share surplus food and get simple farming insights.",
+        "food_page": "🍱 Food Donation",
+        "weather_page": "🌦️ Weather Prediction",
+        "advice_page": "🌾 Smart Farming Advice",
+        "profile_page": "👤 User Profile",
+        "impact_page": "📊 Impact Dashboard",
+        "upload_food": "📷 Upload Food Image",
+        "upload_hint": "Upload an image of available food",
+        "predict_dummy": "Prediction is currently a dummy estimate for demo purposes.",
+        "ngo_heading": "🤝 Nearby NGOs",
+        "donate_now": "Donate Now",
+        "pickup_success": "Pickup scheduled successfully!",
+        "weather_heading": "🌦️ Weather Prediction",
+        "speak_advice": "🎤 Speak Advice",
+        "smart_advice": "🌾 Smart Farming Advice",
+        "profile_heading": "👤 User Profile",
+        "save_profile": "Save Profile",
+        "impact_heading": "📊 Impact Dashboard",
+    },
+    "Tamil": {
+        "navigate": "வழிசெலுத்தல்",
+        "title": "FoodBridge - பசியை குறைப்போம்",
+        "subtitle": "மிஞ்சிய உணவை பகிர்ந்து, எளிய விவசாய ஆலோசனைகள் பெறுங்கள்.",
+        "food_page": "🍱 உணவு தானம்",
+        "weather_page": "🌦️ வானிலை கணிப்பு",
+        "advice_page": "🌾 ஸ்மார்ட் விவசாய ஆலோசனை",
+        "profile_page": "👤 பயனர் சுயவிவரம்",
+        "impact_page": "📊 தாக்கம் டாஷ்போர்டு",
+        "upload_food": "📷 உணவு படத்தை பதிவேற்று",
+        "upload_hint": "கிடைக்கும் உணவின் படத்தை பதிவேற்றவும்",
+        "predict_dummy": "இது டெமோ நோக்கத்திற்கான மதிப்பீடு.",
+        "ngo_heading": "🤝 அருகிலுள்ள NGO-கள்",
+        "donate_now": "இப்போதே தானம் செய்",
+        "pickup_success": "பிக்கப் வெற்றிகரமாக திட்டமிடப்பட்டது!",
+        "weather_heading": "🌦️ வானிலை கணிப்பு",
+        "speak_advice": "🎤 ஆலோசனையை கேள்",
+        "smart_advice": "🌾 ஸ்மார்ட் விவசாய ஆலோசனை",
+        "profile_heading": "👤 பயனர் சுயவிவரம்",
+        "save_profile": "சுயவிவரம் சேமி",
+        "impact_heading": "📊 தாக்கம் டாஷ்போர்டு",
+    },
+}
+
+
+NUTRITION_DATA = {
+    "Rice": {"calories": "130 kcal / 100g", "protein": "2.7 g", "level": "Moderate"},
+    "Bread": {"calories": "265 kcal / 100g", "protein": "9 g", "level": "Moderate"},
+    "Dal": {"calories": "116 kcal / 100g", "protein": "9 g", "level": "Healthy"},
+    "Vegetable Curry": {"calories": "95 kcal / 100g", "protein": "3 g", "level": "Healthy"},
+    "Chapati": {"calories": "297 kcal / 100g", "protein": "10 g", "level": "Healthy"},
+    "Pulao": {"calories": "180 kcal / 100g", "protein": "4 g", "level": "Moderate"},
+}
+
+
+def initialize_state() -> None:
+    if "meals" not in st.session_state:
+        st.session_state.meals = 0
+    if "people_helped" not in st.session_state:
+        st.session_state.people_helped = 0
+    if "food_saved" not in st.session_state:
+        st.session_state.food_saved = 0
+    if "saved_profile" not in st.session_state:
+        st.session_state.saved_profile = None
+
+
+def predict_food_details(uploaded_file) -> tuple[str, int]:
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    if not api_key:
+        api_key = None
+
+    if api_key:
+        try:
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            image = Image.open(uploaded_file)
+            prompt = (
+                "Identify the main food item in this image and estimate how many people it can serve. "
+                "Respond ONLY in this exact format: FoodName|ServesNumber. "
+                "Example: Rice|5"
+            )
+            response = model.generate_content([prompt, image])
+            text = (response.text or "").strip()
+            if "|" in text:
+                food_name, serves_text = text.split("|", 1)
+                serves_count = int("".join(ch for ch in serves_text if ch.isdigit()) or "0")
+                if food_name.strip() and serves_count > 0:
+                    return food_name.strip(), serves_count
+        except Exception:
+            pass
+
+    food_types = ["Rice", "Dal", "Vegetable Curry", "Chapati", "Pulao", "Bread"]
+    return random.choice(food_types), random.randint(2, 12)
+
+
+def get_live_location() -> dict:
+    try:
+        response = requests.get("https://ipapi.co/json/", timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "city": data.get("city", "Unknown"),
+            "region": data.get("region", ""),
+            "country": data.get("country_name", ""),
+            "lat": data.get("latitude"),
+            "lon": data.get("longitude"),
+        }
+    except Exception:
+        return {"city": "Unknown", "region": "", "country": "", "lat": None, "lon": None}
+
+
+def speak_in_browser(message: str) -> None:
+    safe_message = message.replace("\\", "\\\\").replace("'", "\\'")
+    components.html(
+        f"""
+        <script>
+            const message = '{safe_message}';
+            const speech = new SpeechSynthesisUtterance(message);
+            speech.rate = 1;
+            speech.pitch = 1;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(speech);
+        </script>
+        """,
+        height=0,
+    )
+
+
+def render_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        .main {
+            background: linear-gradient(180deg, #f7fbff 0%, #f9fffb 100%);
+        }
+        .title-card {
+            background: #ffffff;
+            border: 1px solid #e8edf2;
+            border-radius: 14px;
+            padding: 18px 22px;
+            margin-bottom: 16px;
+            box-shadow: 0 6px 20px rgba(20, 56, 78, 0.07);
+        }
+        .ngo-card, .profile-card, .nutri-card, .impact-card {
+            background: #ffffff;
+            border: 1px solid #e8edf2;
+            border-radius: 12px;
+            padding: 12px 14px;
+            margin-bottom: 10px;
+            color: #1f2937;
+        }
+        .advice-card {
+            background: #f3fff7;
+            border: 1px solid #cdeed9;
+            border-left: 6px solid #0a8a5b;
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-top: 12px;
+            color: #1f2937;
+        }
+        .suggestion-card {
+            background: #eef7ff;
+            border: 1px solid #c9def8;
+            border-left: 6px solid #2563eb;
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-top: 12px;
+            color: #1f2937;
+        }
+        .muted-text {
+            color: #5b6772;
+            margin-top: 2px;
+        }
+        .impact-card h3 {
+            margin: 0;
+            color: #0a6b52;
+            font-size: 2rem;
+        }
+        .impact-card p {
+            margin: 2px 0 0 0;
+            color: #4b5563;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_header(t: dict) -> None:
+    st.markdown(
+        f"""
+        <div class="title-card">
+            <h1 style="margin:0;color:#0a6b52;">{t["title"]}</h1>
+            <p style="margin:6px 0 0;color:#54606b;">{t["subtitle"]}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def food_page(t: dict, lang: str) -> None:
+    col1, col2 = st.columns([1.2, 1], gap="large")
+
+    with col1:
+        st.subheader(t["upload_food"])
+        uploaded_file = st.file_uploader(
+            t["upload_hint"],
+            type=["jpg", "jpeg", "png", "webp"],
+        )
+        if uploaded_file is not None:
+            st.image(
+                uploaded_file,
+                caption="பதிவேற்றப்பட்ட உணவு படம்" if lang == "Tamil" else "Uploaded food image",
+                use_container_width=True,
+            )
+            food_name, serves_count = predict_food_details(uploaded_file)
+            st.success(f"{food_name} - Serves {serves_count} people")
+            st.caption(t["predict_dummy"])
+
+            st.markdown(
+                f"""
+                <div class="suggestion-card">
+                    <strong>Smart Recommendation:</strong><br/>
+                    {"2 மணி நேரத்திற்குள் தானம் செய்யுங்கள்." if lang == "Tamil" else "Donate within 2 hours for best usage."}<br/>
+                    {"இந்த உணவு அருகிலுள்ள " + str(serves_count) + " பேருக்கு உதவும்." if lang == "Tamil" else "This food can help " + str(serves_count) + " people nearby."}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            nutrition = NUTRITION_DATA.get(
+                food_name, {"calories": "120 kcal / 100g", "protein": "3 g", "level": "Moderate"}
+            )
+            st.markdown(
+                f"""
+                <div class="nutri-card">
+                    <strong>{"🥗 ஊட்டச்சத்து தகவல்" if lang == "Tamil" else "🥗 Nutrition Info"}</strong><br/>
+                    {"கலோரி" if lang == "Tamil" else "Calories"}: {nutrition["calories"]}<br/>
+                    {"புரதம்" if lang == "Tamil" else "Protein"}: {nutrition["protein"]}<br/>
+                    {"ஊட்டச்சத்து நிலை" if lang == "Tamil" else "Nutrition Level"}: {nutrition["level"]}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info(
+                "கணிப்பு, பரிந்துரை மற்றும் ஊட்டச்சத்து தகவலை பார்க்க உணவு படத்தை பதிவேற்றவும்."
+                if lang == "Tamil"
+                else "Upload a food image to view prediction, smart advice, and nutrition info."
+            )
+
+    with col2:
+        st.subheader(t["ngo_heading"])
+        ngos = [
+            ("Hope Foundation", "1.2 km", 13.0827, 80.2707),
+            ("Feeding Hands NGO", "2.8 km", 13.0674, 80.2376),
+            ("Care & Share Trust", "3.5 km", 13.0475, 80.2573),
+        ]
+        for name, distance, _, _ in ngos:
+            st.markdown(
+                f"""
+                <div class="ngo-card">
+                    <strong>{name}</strong><br/>
+                        <span style="color:#5f6c76;">{"தூரம்" if lang == "Tamil" else "Distance"}: {distance}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        if st.button(t["donate_now"], use_container_width=True, type="primary"):
+            st.session_state.meals += 5
+            st.session_state.people_helped += 5
+            st.session_state.food_saved += 3
+            st.success("பிக்கப் திட்டமிடப்பட்டது!" if lang == "Tamil" else "Pickup scheduled!")
+            st.balloons()
+
+        st.markdown("### 🗺️ NGO வரைபடம்" if lang == "Tamil" else "### 🗺️ NGO Map")
+        map_df = pd.DataFrame(
+            [{"lat": lat, "lon": lon, "name": name} for name, _, lat, lon in ngos]
+        )
+        st.map(map_df[["lat", "lon"]], zoom=11)
+        st.caption(
+            "இடங்கள்: Hope Foundation, Feeding Hands NGO, Care & Share Trust"
+            if lang == "Tamil"
+            else "Locations: Hope Foundation, Feeding Hands NGO, Care & Share Trust"
+        )
+
+
+def weather_page(t: dict, lang: str) -> None:
+    st.subheader(t["weather_heading"])
+    live_location = get_live_location()
+    location_line = ", ".join(
+        [part for part in [live_location["city"], live_location["region"], live_location["country"]] if part]
+    )
+    st.write(
+        f"{'📍 நேரடி இடம்' if lang == 'Tamil' else '📍 Live location'}: {location_line if location_line else ('தெரியவில்லை' if lang == 'Tamil' else 'Unknown')}"
+    )
+    st.markdown(
+        '<p class="muted-text">2 நாட்களில் மழை எதிர்பார்க்கப்படுகிறது</p>'
+        if lang == "Tamil"
+        else '<p class="muted-text">Rain expected in 2 days</p>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<p class="muted-text">வெப்பநிலை: 32°C</p>' if lang == "Tamil" else '<p class="muted-text">Temperature: 32°C</p>',
+        unsafe_allow_html=True,
+    )
+
+    selected_location = st.selectbox(
+        "இட வகையை தேர்வு செய்யவும்" if lang == "Tamil" else "Select location type",
+        ["Village", "City", "Farm"],
+    )
+    weather_messages = {
+        "Village": (
+            "கிராம தகவல்: 48 மணி நேரத்தில் லேசான மழை வாய்ப்பு. பாசனத்தை திட்டமிடுங்கள்."
+            if lang == "Tamil"
+            else "Village update: Light rainfall is likely in 48 hours. Plan irrigation accordingly."
+        ),
+        "City": (
+            "நகர் தகவல்: 2 நாட்கள் வெப்பமான வறண்ட நிலை, பின்னர் மாலை மழை வாய்ப்பு."
+            if lang == "Tamil"
+            else "City update: Hot and dry conditions for 2 days, with possible evening showers later."
+        ),
+        "Farm": (
+            "பண்ணை தகவல்: மிதமான மழை விரைவில் வரும். மண் மற்றும் விதை தயார் செய்ய நல்ல நேரம்."
+            if lang == "Tamil"
+            else "Farm update: Moderate rain expected soon. Good time to prepare soil and seeds."
+        ),
+    }
+    st.info(weather_messages[selected_location])
+
+    voice_advice = "Rain expected in 2 days. It is not a good time to harvest rice."
+    if st.button(t["speak_advice"], use_container_width=True):
+        speak_in_browser(voice_advice)
+        st.success("குரல் ஆலோசனை ஒலிக்கப்பட்டது." if lang == "Tamil" else "Voice advice played in browser.")
+
+
+def smart_farming_page(t: dict, lang: str) -> None:
+    st.subheader(t["smart_advice"])
+    choice_col1, choice_col2 = st.columns(2)
+    with choice_col1:
+        crop_type = st.selectbox(
+            "பயிர் வகையை தேர்வு செய்யவும்" if lang == "Tamil" else "Select crop type",
+            ["Rice", "Wheat", "Vegetables"],
+        )
+    with choice_col2:
+        season = st.selectbox(
+            "பருவத்தை தேர்வு செய்யவும்" if lang == "Tamil" else "Select season",
+            ["Summer", "Winter", "Rainy"],
+        )
+
+    if season == "Rainy":
+        best_crop = "Rice"
+        harvest_timing = "Plan harvesting in 110-130 days with regular drainage checks."
+    elif season == "Winter":
+        best_crop = "Wheat"
+        harvest_timing = "Plan harvesting in 120-140 days; monitor morning moisture."
+    else:
+        best_crop = "Vegetables"
+        harvest_timing = "Begin phased harvesting in 45-70 days with frequent watering."
+
+    if crop_type == best_crop:
+        crop_message = (
+            f"சிறந்த தேர்வு: {crop_type} என்பது {season.lower()} பருவத்திற்கு பொருத்தமானது."
+            if lang == "Tamil"
+            else f"Great choice: {crop_type} suits the {season.lower()} season."
+        )
+    else:
+        crop_message = (
+            f"பரிந்துரை: {season.lower()} பருவத்தில் {crop_type} விட {best_crop} சிறப்பாக வளரும்."
+            if lang == "Tamil"
+            else f"Suggested switch: {best_crop} performs better than {crop_type} in {season.lower()}."
+        )
+
+    st.markdown(
+        f"""
+        <div class="advice-card">
+            <strong>{"சிறந்த பயிர் பரிந்துரை" if lang == "Tamil" else "Best crop suggestion"}:</strong> {best_crop}<br/>
+            <strong>{"அறுவடை நேர ஆலோசனை" if lang == "Tamil" else "Harvest timing advice"}:</strong> {harvest_timing}<br/>
+            <strong>{"குறிப்பு" if lang == "Tamil" else "Note"}:</strong> {crop_message}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def profile_page(t: dict, lang: str) -> None:
+    st.subheader(t["profile_heading"])
+    col1, col2 = st.columns(2)
+    with col1:
+        name = st.text_input("பெயர்" if lang == "Tamil" else "Name")
+        role = st.selectbox("பங்கு" if lang == "Tamil" else "Role", ["Donor", "Farmer", "NGO"])
+    with col2:
+        location = st.text_input("இடம்" if lang == "Tamil" else "Location")
+        phone = st.text_input("தொலைபேசி எண்" if lang == "Tamil" else "Phone number")
+
+    if st.button(t["save_profile"], type="primary"):
+        st.session_state.saved_profile = {
+            "Name": name,
+            "Role": role,
+            "Location": location,
+            "Phone": phone,
+        }
+        st.success("சுயவிவரம் வெற்றிகரமாக சேமிக்கப்பட்டது." if lang == "Tamil" else "Profile saved successfully.")
+
+    if st.session_state.saved_profile:
+        profile = st.session_state.saved_profile
+        st.markdown(
+            f"""
+            <div class="profile-card">
+                <strong>{"சேமிக்கப்பட்ட சுயவிவரம்" if lang == "Tamil" else "Saved Profile"}</strong><br/><br/>
+                {"பெயர்" if lang == "Tamil" else "Name"}: {profile["Name"]}<br/>
+                {"பங்கு" if lang == "Tamil" else "Role"}: {profile["Role"]}<br/>
+                {"இடம்" if lang == "Tamil" else "Location"}: {profile["Location"]}<br/>
+                {"தொலைபேசி" if lang == "Tamil" else "Phone"}: {profile["Phone"]}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def impact_page(t: dict, lang: str) -> None:
+    st.subheader(t["impact_heading"])
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(
+            f"""
+            <div class="impact-card">
+                <h3>{st.session_state.meals}</h3>
+                <p>{"உணவு வழங்கப்பட்டது" if lang == "Tamil" else "Meals Donated"}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c2:
+        st.markdown(
+            f"""
+            <div class="impact-card">
+                <h3>{st.session_state.people_helped}</h3>
+                <p>{"உதவப்பட்ட மக்கள்" if lang == "Tamil" else "People Helped"}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            f"""
+            <div class="impact-card">
+                <h3>{st.session_state.food_saved} {"கி.கி" if lang == "Tamil" else "kg"}</h3>
+                <p>{"சேமிக்கப்பட்ட உணவு" if lang == "Tamil" else "Food Saved"}</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def main() -> None:
+    initialize_state()
+    render_styles()
+
+    lang = st.sidebar.selectbox("Language / மொழி", ["English", "Tamil"])
+    t = TEXTS[lang]
+    render_header(t)
+
+    page = st.sidebar.radio(
+        t["navigate"],
+        [
+            t["food_page"],
+            t["weather_page"],
+            t["advice_page"],
+            t["profile_page"],
+            t["impact_page"],
+        ],
+    )
+
+    if page == t["food_page"]:
+        food_page(t, lang)
+    elif page == t["weather_page"]:
+        weather_page(t, lang)
+    elif page == t["advice_page"]:
+        smart_farming_page(t, lang)
+    elif page == t["profile_page"]:
+        profile_page(t, lang)
+    elif page == t["impact_page"]:
+        impact_page(t, lang)
+
+
+if __name__ == "__main__":
+    main()
+```
